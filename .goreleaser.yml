@@ -1,0 +1,37 @@
+---
+version: 2
+
+builds:
+- env:
+  - CGO_ENABLED=0
+  goos:
+  - windows
+  - linux
+  - darwin
+  goarch:
+  - amd64
+  - arm64
+  main: main.go
+  flags:
+  - -trimpath
+  ldflags:
+  - -s -w -extldflags "-static" -X github.com/bmichalkiewicz/gloner/version={{.Version}}
+  mod_timestamp: '{{ .CommitTimestamp }}'
+
+checksum:
+  name_template: 'checksums.txt'
+
+snapshot:
+  version_template: "{{ .Tag }}-next"
+
+release:
+  name_template: "{{.ProjectName}} release v{{.Version}}"
+
+changelog:
+  disable: true
+  use: github
+  filters:
+    exclude:
+    - "Merge pull request"
+    - "dependabot"
+

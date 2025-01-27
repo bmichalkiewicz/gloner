@@ -1,0 +1,29 @@
+name: lint
+
+on:
+  push:
+    tags-ignore:
+    - "*"
+    branches:
+    - main
+    pull_request:
+      branches:
+      - main
+jobs:
+  lint:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v5
+      with:
+        ref: ${{ github.event.pull_request.head.sha }}
+
+    - name: Set-up go
+      uses: actions/setup-go@v5
+      with:
+        go-version: stable
+
+    - name: lint
+      uses: golangci/golangci-lint-action@v8
+      with:
+        version: latest
