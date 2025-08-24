@@ -28,7 +28,7 @@ release:
   name_template: "{{.ProjectName}} release v{{.Version}}"
 
 changelog:
-  disable: true
+  disable: false 
   use: github
   filters:
     exclude:
