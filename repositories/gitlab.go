@@ -1,3 +1,5 @@
+// Package repositories provides GitLab API integration for fetching repository information.
+// It handles group traversal, project listing, and concurrent processing.
 package repositories
 
 import (
@@ -9,17 +11,29 @@ import (
 	gitlab "gitlab.com/gitlab-org/api/client-go"
 )
 
+// GitlabManager handles GitLab API operations for fetching groups and projects.
 type GitlabManager struct {
-	client *gitlab.Client
-	opt    *gitlab.ListGroupProjectsOptions
-
-	groups []*gitlab.Group
+	client *gitlab.Client                     // GitLab API client
+	opt    *gitlab.ListGroupProjectsOptions  // Default options for listing projects
+	groups []*gitlab.Group                   // Cached list of groups and subgroups
 }
 
+// Init creates and initializes a new GitlabManager with the provided token and URL.
+// It validates the connection and sets up default options for API requests.
 func Init(token, url string) (*GitlabManager, error) {
-	g, err := gitlab.NewClient(token, gitlab.WithBaseURL(url+"/api/v4"))
+	if token == "" {
+		return nil, fmt.Errorf("GitLab token is required")
+	}
+	if url == "" {
+		return nil, fmt.Errorf("GitLab URL is required")
+	}
+
+	apiURL := strings.TrimSuffix(url, "/") + "/api/v4"
+	log.Debug().Msgf("Initializing GitLab client with API URL: %s", apiURL)
+
+	g, err := gitlab.NewClient(token, gitlab.WithBaseURL(apiURL))
 	if err != nil {
-		return nil, fmt.Errorf("problem with creating client: %v", err)
+		return nil, fmt.Errorf("failed to create GitLab client: %w", err)
 	}
 
 	return &GitlabManager{
@@ -34,36 +48,51 @@ func Init(token, url string) (*GitlabManager, error) {
 	}, nil
 }
 
+// getNestedGroups fetches all groups and their nested subgroups recursively.
+// It uses a stack-based approach to traverse the group hierarchy.
 func (gb *GitlabManager) getNestedGroups(groups []string) error {
-	for _, group := range groups {
+	for _, groupName := range groups {
+		log.Debug().Msgf("Searching for top-level groups matching: %s", groupName)
 		topGroups, _, err := gb.client.Groups.ListGroups(&gitlab.ListGroupsOptions{
-			Search:       gitlab.Ptr(group),
+			Search:       gitlab.Ptr(groupName),
 			AllAvailable: gitlab.Ptr(false),
 			TopLevelOnly: gitlab.Ptr(true),
 		})
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to search for group '%s': %w", groupName, err)
+		}
+
+		if len(topGroups) == 0 {
+			log.Warn().Msgf("No top-level groups found matching: %s", groupName)
+			continue
 		}
 
 		for _, topGroup := range topGroups {
+			log.Debug().Msgf("Processing group: %s (ID: %d)", topGroup.FullName, topGroup.ID)
 			stack := []*gitlab.Group{topGroup}
 
-			// looping until stack is 0
+			// Process groups using depth-first traversal
 			for len(stack) > 0 {
+				// Pop current group from stack
 				currentGroup := stack[len(stack)-1]
-
-				// remove current group (last group added)
 				stack = stack[:len(stack)-1]
 
+				// Add current group to our list
 				gb.groups = append(gb.groups, currentGroup)
+				log.Debug().Msgf("Added group to processing list: %s", currentGroup.FullName)
 
+				// Fetch subgroups and add them to stack
 				subGroups, _, err := gb.client.Groups.ListSubGroups(currentGroup.ID, &gitlab.ListSubGroupsOptions{})
 				if err != nil {
-					return err
+					log.Warn().Msgf("Failed to fetch subgroups for %s: %v", currentGroup.FullName, err)
+					continue // Continue processing other groups
 				}
 
-				// add subGroups to stack
-				stack = append(stack, subGroups...)
+				if len(subGroups) > 0 {
+					log.Debug().Msgf("Found %d subgroups in %s", len(subGroups), currentGroup.FullName)
+					// Add subgroups to stack for processing
+					stack = append(stack, subGroups...)
+				}
 			}
 		}
 	}
@@ -71,19 +100,32 @@ func (gb *GitlabManager) getNestedGroups(groups []string) error {
 	return nil
 }
 
+// GetGroupProjects fetches all projects from the specified groups and their subgroups.
+// It returns a slice of Group structs containing project information.
 func (gb *GitlabManager) GetGroupProjects(groups []string) ([]*Group, error) {
-	g := []*Group{}
-
-	// Fetch nested groups with IDs
-	err := gb.getNestedGroups(groups)
-	if err != nil {
-		return nil, fmt.Errorf("problem with getting group IDs: %v", err)
+	if len(groups) == 0 {
+		return nil, fmt.Errorf("no groups specified")
 	}
 
+	result := []*Group{}
+
+	// Fetch nested groups with IDs
+	log.Info().Msgf("Fetching nested groups for: %v", groups)
+	err := gb.getNestedGroups(groups)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch nested groups: %w", err)
+	}
+
+	if len(gb.groups) == 0 {
+		return nil, fmt.Errorf("no groups found matching the specified names: %v", groups)
+	}
+
+	log.Info().Msgf("Processing %d groups (including subgroups)", len(gb.groups))
+
 	var (
-		mu        sync.Mutex // To safely update shared resources
-		wg        sync.WaitGroup
-		errorChan = make(chan error, 1) // Channel to capture the first error
+		mu        sync.Mutex                // Protects shared result slice
+		wg        sync.WaitGroup            // Waits for all goroutines
+		errorChan = make(chan error, len(gb.groups)) // Buffered channel for errors
 	)
 
 	// Goroutine to process each group
@@ -108,13 +150,18 @@ func (gb *GitlabManager) GetGroupProjects(groups []string) ([]*Group, error) {
 				projects = append(projects, Project{URL: project})
 			}
 
-			// Safely append to the configTemplate slice
-			mu.Lock()
-			g = append(g, &Group{
-				Name:     strings.ReplaceAll(group.FullName, " ", ""),
-				Projects: projects,
-			})
-			mu.Unlock()
+			if len(projects) > 0 {
+				// Only add groups that have projects
+				mu.Lock()
+				result = append(result, &Group{
+					Name:     sanitizeGroupName(group.FullName),
+					Projects: projects,
+				})
+				mu.Unlock()
+				log.Debug().Msgf("Added group %s with %d projects", group.FullName, len(projects))
+			} else {
+				log.Debug().Msgf("Skipping empty group: %s", group.FullName)
+			}
 		}(group)
 	}
 
@@ -122,14 +169,24 @@ func (gb *GitlabManager) GetGroupProjects(groups []string) ([]*Group, error) {
 	wg.Wait()
 	close(errorChan)
 
-	// Check for any errors
-	if err := <-errorChan; err != nil {
-		return nil, fmt.Errorf("problem with processing groups: %v", err)
+	// Collect any errors that occurred
+	var errors []error
+	for len(errorChan) > 0 {
+		errors = append(errors, <-errorChan)
 	}
 
-	return g, err
+	if len(errors) > 0 {
+		log.Warn().Msgf("Encountered %d errors while processing groups", len(errors))
+		// Return partial results with first error
+		return result, fmt.Errorf("encountered errors during processing: %w", errors[0])
+	}
+
+	log.Info().Msgf("Successfully processed %d groups with projects", len(result))
+	return result, nil
 }
 
+// getProjects fetches all project SSH URLs from a specific GitLab group.
+// It handles pagination and filters out archived projects.
 func (gb *GitlabManager) getProjects(group *gitlab.Group) ([]string, error) {
 	var proj []string
 
@@ -143,18 +200,27 @@ func (gb *GitlabManager) getProjects(group *gitlab.Group) ([]string, error) {
 	for {
 		projects, resp, err := gb.client.Groups.ListGroupProjects(group.ID, groupOptions)
 		if err != nil {
-			// Check if the error is a 404 Group Not Found
-			if _, ok := err.(*gitlab.ErrorResponse); ok && err.(*gitlab.ErrorResponse).Response.StatusCode == 404 {
-				log.Warn().Msgf("group %s not found\n", group.Name)
-				break // Exit the current group's loop and continue with the next group
-			} else {
-				// For all other errors, return immediately
-				return nil, fmt.Errorf("issue with listing group projects: %w", err)
+			// Handle API errors gracefully
+			if apiErr, ok := err.(*gitlab.ErrorResponse); ok {
+				if apiErr.Response.StatusCode == 404 {
+					log.Warn().Msgf("Group %s (ID: %d) not found or not accessible", group.Name, group.ID)
+					break // Continue with next page/group
+				}
+				if apiErr.Response.StatusCode == 403 {
+					log.Warn().Msgf("Access denied to group %s (ID: %d)", group.Name, group.ID)
+					break
+				}
 			}
+			return nil, fmt.Errorf("failed to list projects for group %s (ID: %d): %w", group.Name, group.ID, err)
 		}
 		for _, project := range projects {
-			proj = append(proj, project.SSHURLToRepo)
+			if project.SSHURLToRepo != "" {
+				proj = append(proj, project.SSHURLToRepo)
+			} else {
+				log.Debug().Msgf("Skipping project %s: no SSH URL available", project.Name)
+			}
 		}
+		log.Debug().Msgf("Fetched %d projects from page %d of group %s", len(projects), groupOptions.Page, group.Name)
 
 		if resp.NextPage == 0 {
 			break
@@ -162,5 +228,14 @@ func (gb *GitlabManager) getProjects(group *gitlab.Group) ([]string, error) {
 		groupOptions.Page = resp.NextPage
 	}
 
+	log.Debug().Msgf("Total projects found in group %s: %d", group.Name, len(proj))
 	return proj, nil
+}
+
+// sanitizeGroupName removes spaces and other characters that might cause issues in directory names
+func sanitizeGroupName(name string) string {
+	// Replace spaces and other problematic characters
+	sanitized := strings.ReplaceAll(name, " ", "")
+	sanitized = strings.ReplaceAll(sanitized, "/", "-")
+	return sanitized
 }

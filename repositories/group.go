@@ -1,55 +1,81 @@
+// Package repositories provides functionality for repository management,
+// including URL validation and data structures for organizing repositories into groups.
 package repositories
 
 import (
 	"fmt"
 	"regexp"
+	"sync"
 )
 
-var pattern = `^git@([a-zA-Z0-9.-]+):([a-zA-Z0-9_.-]+)(/[a-zA-Z0-9_./-]*)?\.git$`
+// sshURLPattern defines the regex pattern for validating SSH URLs
+// Format: git@hostname:owner/repo.git or git@hostname:group/subgroup/repo.git
+var sshURLPattern = `^git@([a-zA-Z0-9.-]+):([a-zA-Z0-9_.-]+)(/[a-zA-Z0-9_./-]*)?\.git$`
+var sshRegex *regexp.Regexp
+var regexOnce sync.Once
 
+// Group represents a collection of repositories, typically from a GitLab group or organization.
 type Group struct {
-	Name     string    `yaml:"name"`
-	Projects []Project `yaml:"projects"`
+	Name     string    `yaml:"name" json:"name"`         // Group name
+	Projects []Project `yaml:"projects" json:"projects"` // List of projects in the group
 }
 
+// Project represents a single repository with its SSH URL.
 type Project struct {
-	URL string `yaml:"url"`
+	URL string `yaml:"url" json:"url"` // SSH URL of the repository
 }
 
+// Validate checks if the provided URL is a valid SSH URL for Git repositories.
+// It expects the format: git@hostname:owner/repo.git
 func Validate(url string) error {
-	matched, err := regexp.MatchString(pattern, url)
-	if err != nil {
-		return fmt.Errorf("error validating SSH URL: %v", err)
+	if url == "" {
+		return fmt.Errorf("SSH URL cannot be empty")
 	}
-	if !matched {
-		return fmt.Errorf("invalid SSH URL provided (example: git@gitlab.com:goodgroup/goodrepo.git)")
+
+	// Compile regex only once using sync.Once for thread safety
+	regexOnce.Do(func() {
+		sshRegex = regexp.MustCompile(sshURLPattern)
+	})
+
+	if !sshRegex.MatchString(url) {
+		return fmt.Errorf("invalid SSH URL format. Expected: git@hostname:owner/repo.git, got: %s", url)
 	}
 
 	return nil
 }
 
+// Decode extracts repository information from an SSH URL and creates a Group.
+// This is useful for creating a single-project group from a repository URL.
 func Decode(url string) (*Group, error) {
-	// Validate the SSH URL
-	err := Validate(url)
-	if err != nil {
-		return nil, err
+	// Validate the SSH URL first
+	if err := Validate(url); err != nil {
+		return nil, fmt.Errorf("failed to decode URL: %w", err)
 	}
 
-	// Compile the regex and find submatches
-	regex := regexp.MustCompile(`^git@([a-zA-Z0-9.-]+):([a-zA-Z0-9_.-]+)(/[a-zA-Z0-9_./-]*)?\.git$`)
-	submatches := regex.FindStringSubmatch(url)
+	// Use the compiled regex from Validate function
+	regexOnce.Do(func() {
+		sshRegex = regexp.MustCompile(sshURLPattern)
+	})
 
-	// Ensure the submatches contain the expected groups
+	submatches := sshRegex.FindStringSubmatch(url)
 	if len(submatches) < 3 {
-		return nil, fmt.Errorf("failed to extract groups from SSH URL")
+		return nil, fmt.Errorf("failed to extract repository information from SSH URL: %s", url)
 	}
 
-	// Extract the main group (e.g., "goodgroup")
-	mainGroup := submatches[2]
+	// Extract components: [full_match, hostname, owner, path_suffix]
+	hostname := submatches[1]
+	owner := submatches[2]
+	path := owner
+	if len(submatches) > 3 && submatches[3] != "" {
+		// If there's a path component, combine owner with path
+		path = owner + submatches[3]
+	}
 
-	// Return the Group with the extracted name
+	// Create a group name from hostname and path
+	groupName := fmt.Sprintf("%s/%s", hostname, path)
+
 	return &Group{
-		Name: mainGroup, // Main group
+		Name: groupName,
 		Projects: []Project{
 			{
 				URL: url,
