@@ -19,7 +19,7 @@ var Settings *Config
 
 // Config represents the application configuration structure
 type Config struct {
-	Path   string        `toml:"path"`   // Default path for cloning repositories
+	Path   string       `toml:"path"`   // Default path for cloning repositories
 	Gitlab GitlabConfig `toml:"gitlab"` // GitLab-specific configuration
 }
 

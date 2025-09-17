@@ -96,10 +96,10 @@ func cloneGroupProjects(groups []*repositories.Group, basePath string) error {
 	defer sm.Stop()
 
 	var (
-		wg           sync.WaitGroup
-		errorChan    = make(chan error, len(groups)*10) // Buffer for potential errors
-		maxWorkers   = runtime.NumCPU() * 2              // Limit concurrent clones
-		semaphore    = make(chan struct{}, maxWorkers)
+		wg         sync.WaitGroup
+		errorChan  = make(chan error, len(groups)*10) // Buffer for potential errors
+		maxWorkers = runtime.NumCPU() * 2             // Limit concurrent clones
+		semaphore  = make(chan struct{}, maxWorkers)
 	)
 
 	// Process each group concurrently

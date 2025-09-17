@@ -25,6 +25,7 @@ func main() {
 		Out:        os.Stderr,
 		TimeFormat: "15:04:05",
 	})
+	log.Logger = log.Logger.Level(zerolog.InfoLevel)
 
 	// Initialize configuration system
 	config.Init()
@@ -46,6 +47,16 @@ func main() {
 				Usage:   "Base directory for cloning repositories",
 				Value:   getDefaultDestination(),
 			},
+			&cli.BoolFlag{
+				Name:  "debug",
+				Usage: "Enable debug logging",
+			},
+		},
+		Before: func(ctx context.Context, cmd *cli.Command) (context.Context, error) {
+			if cmd.Bool("debug") {
+				log.Logger = log.Logger.Level(zerolog.DebugLevel)
+			}
+			return ctx, nil
 		},
 		Commands: []*cli.Command{
 			cmd.Gitlab(), // GitLab group cloning command

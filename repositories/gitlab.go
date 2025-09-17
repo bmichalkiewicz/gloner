@@ -13,9 +13,9 @@ import (
 
 // GitlabManager handles GitLab API operations for fetching groups and projects.
 type GitlabManager struct {
-	client *gitlab.Client                     // GitLab API client
-	opt    *gitlab.ListGroupProjectsOptions  // Default options for listing projects
-	groups []*gitlab.Group                   // Cached list of groups and subgroups
+	client *gitlab.Client                   // GitLab API client
+	opt    *gitlab.ListGroupProjectsOptions // Default options for listing projects
+	groups []*gitlab.Group                  // Cached list of groups and subgroups
 }
 
 // Init creates and initializes a new GitlabManager with the provided token and URL.
@@ -123,8 +123,8 @@ func (gb *GitlabManager) GetGroupProjects(groups []string) ([]*Group, error) {
 	log.Info().Msgf("Processing %d groups (including subgroups)", len(gb.groups))
 
 	var (
-		mu        sync.Mutex                // Protects shared result slice
-		wg        sync.WaitGroup            // Waits for all goroutines
+		mu        sync.Mutex                         // Protects shared result slice
+		wg        sync.WaitGroup                     // Waits for all goroutines
 		errorChan = make(chan error, len(gb.groups)) // Buffered channel for errors
 	)
 
