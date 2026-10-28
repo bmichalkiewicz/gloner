@@ -3,7 +3,10 @@
 package facts
 
 import (
-	"github.com/mitchellh/go-homedir"
+	"os"
+	"path/filepath"
+	"strings"
+
 	"github.com/rs/zerolog/log"
 )
 
@@ -20,12 +23,24 @@ func GetApplicationName() string {
 // GetHomeDirectory returns the user's home directory path.
 // Returns empty string if the home directory cannot be determined.
 func GetHomeDirectory() string {
-	homeDir, err := homedir.Dir()
+	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		log.Warn().Err(err).Msg("Could not determine home directory")
 		return ""
 	}
 
-	log.Debug().Msgf("Home directory: %s", homeDir)
 	return homeDir
+}
+
+// ExpandHome replaces a leading "~" in path with the user's home directory.
+func ExpandHome(path string) string {
+	if path != "~" && !strings.HasPrefix(path, "~/") {
+		return path
+	}
+
+	homeDir := GetHomeDirectory()
+	if homeDir == "" {
+		return path
+	}
+	return filepath.Join(homeDir, strings.TrimPrefix(path, "~"))
 }

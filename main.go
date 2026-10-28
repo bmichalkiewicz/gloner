@@ -4,12 +4,14 @@ package main
 
 import (
 	"context"
-	"gloner/cmd"
-	"gloner/config"
-	"gloner/facts"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 
+	"github.com/bmichalkiewicz/gloner/cmd"
+	"github.com/bmichalkiewicz/gloner/config"
+	"github.com/bmichalkiewicz/gloner/facts"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/urfave/cli/v3"
@@ -27,9 +29,6 @@ func main() {
 	})
 	log.Logger = log.Logger.Level(zerolog.InfoLevel)
 
-	// Initialize configuration system
-	config.Init()
-
 	// Set default version if not provided during build
 	if len(version) == 0 {
 		version = "develop"
@@ -44,8 +43,9 @@ func main() {
 			&cli.StringFlag{
 				Name:    "destination",
 				Aliases: []string{"d"},
-				Usage:   "Base directory for cloning repositories",
+				Usage:   "Base directory for cloning repositories (overrides \"path\" in the config file)",
 				Value:   getDefaultDestination(),
+				Sources: cli.EnvVars("GLONER_DESTINATION"),
 			},
 			&cli.BoolFlag{
 				Name:  "debug",
@@ -56,16 +56,23 @@ func main() {
 			if cmd.Bool("debug") {
 				log.Logger = log.Logger.Level(zerolog.DebugLevel)
 			}
-			return ctx, nil
+			// Loaded after flag parsing so --debug also covers configuration loading
+			return ctx, config.Init()
 		},
 		Commands: []*cli.Command{
 			cmd.Gitlab(), // GitLab group cloning command
-			cmd.Clone(),  // Single repository cloning command
+			cmd.Github(), // GitHub organization/user cloning command
+			cmd.Clone(),  // Repository cloning by URL
+			cmd.Pull(),   // Update of already cloned repositories
 		},
 	}
 
-	// Run the CLI application
-	if err := app.Run(context.Background(), os.Args); err != nil {
+	// Cancel running git operations and API requests on Ctrl+C
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if err := app.Run(ctx, os.Args); err != nil {
+		stop()
 		log.Fatal().Err(err).Msg("Application encountered a fatal error")
 	}
 }

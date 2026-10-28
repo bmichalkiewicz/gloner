@@ -3,51 +3,53 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"gloner/git"
-	"gloner/repositories"
 
-	"github.com/rs/zerolog/log"
+	"github.com/bmichalkiewicz/gloner/repositories"
 	"github.com/urfave/cli/v3"
 )
 
-// Clone returns a CLI command for cloning a single repository.
-// It validates the SSH URL format and creates the appropriate directory structure.
+// Clone returns a CLI command for cloning one or more repositories by URL.
 func Clone() *cli.Command {
 	return &cli.Command{
-		Name:  "clone",
-		Usage: "Clone a repository",
-		Flags: []cli.Flag{
-			&cli.StringFlag{
-				Name:     "url",
-				Usage:    "The SSH URL of the repository to clone (e.g., git@github.com:user/repo.git)",
-				Aliases:  []string{"u"},
-				Required: true,
+		Name:      "clone",
+		Usage:     "Clone repositories by URL",
+		ArgsUsage: "[URL...]",
+		Description: "Accepts SSH (git@host:owner/repo.git, ssh://git@host:port/owner/repo.git)\n" +
+			"and HTTPS (https://host/owner/repo.git) URLs, given as arguments or with --url.",
+		Flags: append([]cli.Flag{
+			&cli.StringSliceFlag{
+				Name:    "url",
+				Usage:   "The URL of the repository to clone (e.g., git@github.com:user/repo.git)",
+				Aliases: []string{"u"},
 			},
-		},
+		}, cloneFlags()...),
 		Action: func(ctx context.Context, cmd *cli.Command) error {
-			path := cmd.String("destination")
-			url := cmd.String("url")
-
-			// Validate SSH URL format
-			if err := repositories.Validate(url); err != nil {
-				return fmt.Errorf("invalid repository URL: %w", err)
+			urls := append(cmd.StringSlice("url"), cmd.Args().Slice()...)
+			if len(urls) == 0 {
+				return fmt.Errorf("no repository URL given: pass it as an argument or with --url")
 			}
 
-			log.Info().Msgf("Cloning repository: %s", url)
-			log.Info().Msgf("Destination path: %s", path)
-
-			// Attempt to clone the repository
-			alreadyCloned, err := git.Clone(url, path)
-			if alreadyCloned {
-				log.Info().Msg("Repository already exists at destination, skipping clone")
-				return nil
+			for _, url := range urls {
+				if err := repositories.Validate(url); err != nil {
+					return fmt.Errorf("invalid repository URL: %w", err)
+				}
 			}
+
+			opts, err := gitOptions(cmd)
 			if err != nil {
-				return fmt.Errorf("failed to clone repository %s: %w", url, err)
+				return err
+			}
+			base, err := destination(cmd)
+			if err != nil {
+				return err
 			}
 
-			log.Info().Msg("Repository cloned successfully")
-			return nil
+			group := &repositories.Group{Name: "clone"}
+			for _, url := range urls {
+				group.Projects = append(group.Projects, repositories.Project{URL: url})
+			}
+
+			return runBatches(ctx, cloneBatches([]*repositories.Group{group}, base, opts), int(cmd.Int("concurrency")), opts.DryRun)
 		},
 	}
 }

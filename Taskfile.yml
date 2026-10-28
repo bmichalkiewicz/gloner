@@ -5,42 +5,53 @@ env:
   APPLICATION_NAME: gloner
   DEBUG: false
 
+vars:
+  VERSION:
+    sh: git describe --tags --always --dirty 2>/dev/null || echo develop
+
 tasks:
   default:
     - go mod tidy
 
   install:
+    deps: [build]
     cmds:
       - cp ${APPLICATION_NAME} /usr/local/bin/${APPLICATION_NAME}
 
   build:
+    env:
+      CGO_ENABLED: 0
     cmds:
       - go mod tidy
-      - go env -w CGO_ENABLED=0
-      - go build -ldflags '-s -w' -o ./${APPLICATION_NAME}
+      - go build -trimpath -ldflags '-s -w -X main.version={{.VERSION}}' -o ./${APPLICATION_NAME}
+
+  test:
+    desc: run tests
+    cmds:
+      - go test -race ./...
 
   lint:
     desc: run linter
     cmds:
-      - go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.4.0
-      - golangci-lint run .
+      - go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest run ./...
 
   fmt:
     desc: run formatter
     cmds:
-      - go fmt .
+      - go fmt ./...
 
   upgrade-deps:
     desc: upgrade all dependencies
     cmds:
       - go get -u ./...
+      - go mod tidy
 
   vet:
     desc: run go vet
     cmds:
-      - go vet
+      - go vet ./...
 
   vuln:
     desc: check for vulnerabilities
     cmds:
-      - govulncheck .
+      - go run golang.org/x/vuln/cmd/govulncheck@latest ./...

@@ -15,6 +15,9 @@ This project uses [Task](https://taskfile.dev/) for build automation. All comman
 # Build the application
 task build
 
+# Run tests
+task test
+
 # Run linter
 task lint
 
@@ -51,56 +54,51 @@ go mod tidy
 
 ## Architecture Overview
 
+The module path is `github.com/bmichalkiewicz/gloner`. The version is injected with `-X main.version=...`.
+
 ### Package Structure
-- **`main.go`**: CLI application entry point using `urfave/cli/v3` framework
-- **`cmd/`**: Command implementations (`gitlab.go`, `clone.go`)
-- **`config/`**: Configuration management with TOML support
-- **`git/`**: Git operations and repository cloning logic
-- **`repositories/`**: GitLab API integration and repository management
-- **`facts/`**: Application constants and utility functions
-- **`exec/`**: Command execution wrapper
+- **`main.go`**: CLI entry point using `urfave/cli/v3`; loads config in the `Before` hook (after `--debug` is parsed) and cancels the context on Ctrl+C
+- **`cmd/`**: Commands (`gitlab.go`, `github.go`, `clone.go`, `pull.go`) and the shared job runner (`run.go`)
+- **`config/`**: TOML configuration (`~/.config/gloner/config.toml`, mode 0600) and URL normalization
+- **`git/`**: Clone/pull logic, target directory resolution, repository discovery
+- **`repositories/`**: GitLab and GitHub API integration, clone URL parsing (`url.go`)
+- **`facts/`**: Application constants, home directory helpers
+- **`exec/`**: Command execution wrapper that captures stderr into errors
 
-### Core Functionality
-The application provides two main commands:
+### Commands
+1. **`gitlab`** - Clone all projects of GitLab groups. Groups are resolved by full path (fallback: exact name search) and listed with `include_subgroups`, paginated.
+2. **`github`** - Clone repositories of GitHub organizations (fallback: users). Supports GitHub Enterprise.
+3. **`clone`** - Clone repositories by URL (args or `--url`).
+4. **`pull`** - `git pull --ff-only` every repository below the destination, optionally filtered by path prefix.
 
-1. **`gitlab`** - Bulk clone repositories from GitLab groups
-   - Supports nested group traversal
-   - Concurrent cloning with progress spinners
-   - Uses GitLab API v4 client
-   
-2. **`clone`** - Clone individual repositories
-   - Validates SSH URLs
-   - Creates structured directory paths
+Shared flags: `--dry-run`, `--update`, `--depth`, `--concurrency`, plus `--include-archived` (gitlab/github).
 
-### Configuration System
-- Configuration stored in `~/.config/gloner/config.toml`
-- Auto-generated TOML config with GitLab URL and token settings
-- Default GitLab URL: `https://gitlab.com`
-- Supports custom GitLab instances via `-u/--url` flag
+### Configuration Precedence
+Flag/env var > config file > default. Destination: `--destination`/`GLONER_DESTINATION` > `path` in config > `~/git`.
 
 ### Path Resolution Logic
-Repositories are cloned using Go-style paths extracted from SSH URLs:
+`repositories.ParseURL()` accepts `git@host:path`, `ssh://user@host[:port]/path` and `https://host/path`,
+strips `.git` and rejects `.`/`..` segments. `git.Dir()` joins it with the base directory:
 - Input: `git@github.com:user/repo.git`
 - Output: `~/git/github.com/user/repo`
 
-The `git/git.go:getPathFromSSH()` function handles URL parsing and path construction.
-
 ### Concurrency Model
-- **Group-level concurrency**: Each GitLab group is processed in parallel
-- **Project-level concurrency**: Within each group, repositories are cloned concurrently with CPU-based limits
-- **Concurrency control**: Uses semaphores to limit simultaneous git clone operations (`runtime.NumCPU() * 2`)
-- **Progress indication**: `ysmrr` spinner library provides real-time visual feedback for each group
-- **Error handling**: Thread-safe error collection using channels and mutex protection
+- `cmd/run.go:runBatches()` runs jobs grouped into batches (one per GitLab namespace / GitHub owner / parent directory)
+- A shared semaphore limits simultaneous git operations (`--concurrency`, default `runtime.NumCPU() * 2`)
+- Results and errors are collected under a mutex (no bounded channels), and a summary is logged at the end
+- `ysmrr` spinners are used only on an interactive stderr without `--debug` or `--dry-run`; otherwise one log line per repository
 
 ### Dependencies
-- **CLI Framework**: `urfave/cli/v3` for command structure
-- **GitLab API**: `gitlab.com/gitlab-org/api/client-go` for repository fetching
+- **CLI Framework**: `urfave/cli/v3`
+- **GitLab API**: `gitlab.com/gitlab-org/api/client-go`
+- **GitHub API**: `google/go-github`
 - **Logging**: `rs/zerolog` with console output
-- **Config**: `pelletier/go-toml/v2` for TOML parsing
+- **Config**: `pelletier/go-toml/v2`
 - **UI**: `chelnak/ysmrr` for progress spinners
 
 ### Error Handling Patterns
-- Configuration errors are fatal and logged with `log.Fatal()`
+- Configuration errors are returned from the `Before` hook and end the program
 - CLI command errors bubble up through return values
-- Concurrent operations collect errors and use `errors.Join()` for aggregation
-- Already-cloned repositories are detected and skipped (not errors)
+- Every failed repository is logged; the command returns an error with the failure count
+- Already-cloned repositories are skipped (or pulled with `--update`); an existing directory that is not a git repository is an error
+- A failed or interrupted clone removes its partial directory

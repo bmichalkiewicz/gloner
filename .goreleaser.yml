@@ -11,11 +11,11 @@ builds:
   goarch:
   - amd64
   - arm64
-  main: main.go
+  main: .
   flags:
   - -trimpath
   ldflags:
-  - -s -w -extldflags "-static" -X github.com/bmichalkiewicz/gloner/version={{.Version}}
+  - -s -w -extldflags "-static" -X main.version={{.Version}}
   mod_timestamp: '{{ .CommitTimestamp }}'
 
 checksum:
